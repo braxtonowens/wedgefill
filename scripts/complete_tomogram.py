@@ -58,6 +58,7 @@ def main():
     ap.add_argument("objects", nargs="+")
     ap.add_argument("--hidden-deg", type=float, default=55.0)
     ap.add_argument("--closed", action="store_true", help="plain closed fit (completes in every direction)")
+    ap.add_argument("--device", default="cuda" if __import__("torch").cuda.is_available() else "cpu")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
@@ -79,7 +80,7 @@ def main():
         comp = binv(L == cid, b, "max"); Tb = binv(T, b, "mean")
         pts = np.argwhere(comp).astype(float)
         tf = time.time()
-        res = complete_membrane(pts, hidden_deg=a.hidden_deg, wedge_aware=not a.closed)
+        res = complete_membrane(pts, hidden_deg=a.hidden_deg, wedge_aware=not a.closed, device=a.device)
         fit_s = time.time() - tf
         fn, area, cen = face_geometry(res.vertices, res.faces)
         r = dict(name=name, comp_id=cid, bin=b, crop_origin_zyx=lo.tolist(), fit_s=round(fit_s, 1),

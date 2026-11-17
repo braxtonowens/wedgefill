@@ -54,6 +54,11 @@ pip install -e ".[scripts,test]"
 pytest
 ```
 
+## Data and tools used in testing
+
+- CZ cryoET Data Portal (Ermel et al., Nature Methods 2024), dataset 10235, run mba2011-08-26-10.
+- MemBrain-seg membrane predictions (Lamm et al., MemBrain v2), as deposited on the portal (annotation 101).
+
 ## License
 
 MIT
