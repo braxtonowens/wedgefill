@@ -32,20 +32,82 @@ res.vertices, res.faces, res.added                    # mesh + faces added as co
 
 `scripts/complete_tomogram.py` runs this on objects of a tomogram + segmentation (Zarr) and saves slice figures.
 
-## Status: research prototype
+## Demo on real tomograms
 
-- **Real data:** tested on CZ cryoET Data Portal dataset 10235 (Salmonella minicells), with MemBrain-seg masks.
-  - The gaps are real and wedge-shaped. MemBrain loses membrane with normals up to about 55° from the beam
-    axis, wider than the geometric wedge.
-  - The completed caps are plausible, and on one double-membrane minicell the outer cap height agrees with an
-    independent estimate.
-- **Not validated:** the hidden region contains no membrane signal, so completed shapes are the prior's
-  prediction, not a measurement.
-  - Curvature or height in completed regions should be reported with that caveat.
-  - Validation against ground truth (dual-axis tomograms, or phantoms with realistic tilt-series simulation) is
-    the next step.
-- **Known bias:** the Willmore prior favours round shapes. A Helfrich model with volume or pressure terms is a
-  planned extension.
+All examples use tomograms and MemBrain-seg membrane predictions as deposited on the
+[CZ cryoET Data Portal](https://cryoetdataportal.czscience.com). No retraining or per-dataset tuning was done.
+
+**How to read the figures**
+- Top row: raw slices through the object's centre: XZ, YZ (these contain the beam axis, z) and XY.
+- Bottom row: the same slices with overlays.
+  - **Yellow** = MemBrain-seg mask.
+  - **Red** = membrane added by wedgefill.
+- In XZ and YZ the mask is an open "( )": the top and bottom are missing. wedgefill adds only those caps. In XY,
+  where the wedge hides nothing, nothing is added.
+
+### SARS-CoV-2 virions (portal dataset 10006, 6.1 Å/px)
+
+![SARS-CoV-2 virion](docs/sarscov2_virion_a.png)
+
+The top and bottom of the viral envelope are faintly visible in the raw XZ/YZ slices (panels a, b), but MemBrain
+misses them. The completion (red, panels d, e) runs along them.
+
+![Second SARS-CoV-2 virion](docs/sarscov2_virion_b.png)
+
+A slab through the whole tomogram. MemBrain arcs are in yellow; added caps on the two accepted objects are in red.
+
+![SARS-CoV-2 tomogram overview](docs/sarscov2_overview_xz.png)
+
+### Vesicle in mouse tissue (portal dataset 10010, 13.4 Å/px)
+
+![Mouse vesicle](docs/mouse_vesicle.png)
+
+### Salmonella minicell, outer membrane (portal dataset 10235, 10.2 Å/px)
+
+![Salmonella minicell outer membrane](docs/salmonella_minicell_outer.png)
+
+The completed outer membrane is 171 nm tall. That matches an independent estimate: the inner membrane's completed
+height plus the periplasm width seen in XY (about 170–180 nm).
+
+### Why "wedge-aware" matters
+
+A plain closed fit (left) closes the surface in every direction. On this curled membrane it bulges across a
+concavity that is clearly visible in XY (panel f), where there is real data. The wedge-aware fit (right) adds only
+the top and bottom caps and leaves XY exactly as segmented.
+
+| Plain closed fit | wedgefill (wedge-aware) |
+|---|---|
+| ![closed fit](docs/salmonella_curled_closedfit.png) | ![wedge-aware](docs/salmonella_curled.png) |
+
+## Automatic object selection and acceptance
+
+`scripts/complete_tomogram.py --auto N` tries the N largest membrane objects that are not cut by the XY edges of the
+tomogram. A result is **accepted** only if it behaves like a closed membrane:
+- at least 15% of the fitted surface was added as caps;
+- at most 10% of the surface lies in visible directions away from the mask. A high value means the object is not a
+  closed membrane, e.g. a streak, an ice edge or a sheet fragment.
+- the mask is not flat: its thinnest principal axis is at least 0.2 × its widest.
+
+Rejected objects are still listed in `stats.json` but left off the overview figure.
+
+**Results:** across 5 portal tomograms (10006, 10010, 10156, 10237, 10253), 50 candidates were tried and 5
+accepted. All 5 were checked by eye and look plausible. The rejected candidates are mostly MemBrain false positives
+(reconstruction streaks, ice and carbon edges) and fragments of cells too large for one crop.
+
+## Limitations
+
+- **Not validated against ground truth.** The hidden region holds little or no membrane signal, so completed caps
+  are the prior's prediction, not a measurement.
+  - Report curvature, height or volume of completed regions with that caveat.
+  - Planned validation: dual-axis tomograms, and phantoms with realistic tilt-series simulation.
+- **Shape bias.** The Willmore prior favours round shapes, so flattened objects may be completed too tall. A
+  Helfrich model with volume or pressure terms is a planned extension.
+- **Objects must fit one crop** (128³ after binning by up to 4). For whole cells larger than that, the left and
+  right arcs of the same membrane become separate objects and are not joined.
+- **Garbage in, garbage out.** Automatic selection relies on MemBrain's mask. Tomograms dominated by
+  reconstruction artifacts (e.g. 10156, 10253 above) give no accepted objects, which is the intended outcome.
+- In one earlier run a flat streak artifact passed the first two acceptance tests; the flatness test was added
+  after that. It has not been tested on a larger artifact set.
 
 ## Install and test
 

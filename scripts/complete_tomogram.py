@@ -7,6 +7,9 @@ usage:
 Component ids refer to the 26-connected labelling of the full-resolution mask (scipy.ndimage.label).
 Each object is cropped (and binned so it fits 128^3), completed with wedgefill.complete_membrane, and plotted as
 XZ / YZ / XY slices through its centre: yellow = mask, red = added membrane (or the closed surface with --closed).
+With --auto N, the N largest objects not cut by the XY edges are tried; a result is "accepted" (and drawn on the
+overview) only if it added >= --min-added of its surface, dropped <= --max-dropped (visible, off-mask surface; high
+means not a closed membrane) and the mask is not flat (--min-flatness).
 """
 import argparse
 import json
@@ -55,7 +58,15 @@ def norm(a, p=(1, 99)):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("tomo"); ap.add_argument("mask"); ap.add_argument("out")
-    ap.add_argument("objects", nargs="+")
+    ap.add_argument("objects", nargs="*", help="COMP_ID[:name]; omit with --auto")
+    ap.add_argument("--auto", type=int, default=0, help="complete the N largest suitable objects")
+    ap.add_argument("--min-vox", type=int, default=3000)
+    ap.add_argument("--max-bin", type=int, default=4)
+    ap.add_argument("--min-added", type=float, default=0.15, help="accept: added area fraction at least this")
+    ap.add_argument("--min-flatness", type=float, default=0.20,
+                    help="accept: thinnest/widest principal-axis s.d. of the mask at least this (rejects flat streaks)")
+    ap.add_argument("--max-dropped", type=float, default=0.10,
+                    help="accept: dropped (visible, off-mask) area fraction at most this; high = not a closed membrane")
     ap.add_argument("--hidden-deg", type=float, default=55.0)
     ap.add_argument("--closed", action="store_true", help="plain closed fit (completes in every direction)")
     ap.add_argument("--device", default="cuda" if __import__("torch").cuda.is_available() else "cpu")
@@ -68,8 +79,23 @@ def main():
     objs = ndi.find_objects(lab)
     print("loaded", round(time.time() - t0, 1), "s", flush=True)
     suffix = "_closed" if a.closed else ""
-    results = []
-    for arg in a.objects:
+    objects = list(a.objects)
+    if a.auto:
+        sizes = ndi.sum(mask, lab, range(1, len(objs) + 1))
+        cand = []
+        for cid in np.argsort(sizes)[::-1] + 1:
+            sl = objs[cid - 1]
+            ext = np.array([s_.stop - s_.start for s_ in sl])
+            touches_xy = any(s_.start == 0 or s_.stop == n for s_, n in zip(sl[1:], mask.shape[1:]))
+            if sizes[cid - 1] < a.min_vox or touches_xy or np.ceil(ext.max() * 1.25 / S) > a.max_bin:
+                continue
+            cand.append(f"{cid}:obj{cid}")
+            if len(cand) == a.auto:
+                break
+        objects = cand
+        print("auto-selected", objects, flush=True)
+    results, added_full = [], []
+    for arg in objects:
         cid, name = (arg.split(":") + [None])[:2]
         cid = int(cid); name = name or f"comp{cid}"
         sl = objs[cid - 1]
@@ -88,8 +114,15 @@ def main():
                  completed_extent_z_vox=float(np.ptp(np.concatenate([pts[:, 0], cen[res.added, 0]]))),
                  **res.area_fractions(), visible_faces_mean_dist_vox=float(
                      np.average(res.dist_to_mask[~res.added & ~res.dropped], weights=area[~res.added & ~res.dropped])))
+        ev = np.sqrt(np.clip(np.linalg.eigvalsh(np.cov((pts - pts.mean(0)).T)), 0, None))
+        r["flatness"] = float(ev[0] / ev[-1])
+        r["accepted"] = bool(r["added"] >= a.min_added and r["dropped"] <= a.max_dropped
+                             and r["flatness"] >= a.min_flatness)
         print(json.dumps(r), flush=True)
         results.append(r)
+        if res.added.any() and r["accepted"]:
+            sp = sample_surface(res.vertices, res.faces[res.added], 20000, np.random.default_rng(1))
+            added_full.append(lo + sp * b)  # back to full-resolution (z, y, x)
         # red overlay: thin shell sampled from the added faces
         shell = np.zeros((S, S, S), bool)
         if res.added.any():
@@ -114,6 +147,19 @@ def main():
                     va="top")
         fig.tight_layout(); fig.savefig(f"{a.out}/{name}{suffix}_slices.png", dpi=150); plt.close(fig)
     json.dump(results, open(f"{a.out}/stats{suffix}.json", "w"), indent=1)
+    # overview: XZ slab through the tomogram at the y with the most added membrane
+    if added_full:
+        P = np.concatenate(added_full)
+        y0 = int(np.bincount(np.clip(P[:, 1].astype(int), 0, mask.shape[1] - 1)).argmax())
+        slab = tomo[:, max(0, y0 - 3):y0 + 4, :].mean(1)
+        mk = mask[:, y0, :]
+        near = np.abs(P[:, 1] - y0) < 1.5
+        fig, ax = plt.subplots(figsize=(12, 12 * slab.shape[0] / slab.shape[1] + 0.4))
+        ax.imshow(norm(slab), cmap="gray", aspect="equal")
+        ax.contour(mk, [0.5], colors=["#ffd000"], linewidths=0.6)
+        ax.scatter(P[near, 2], P[near, 0], s=0.6, c="#ff2d55", linewidths=0)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel("x"); ax.set_ylabel("z (beam)")
+        fig.tight_layout(); fig.savefig(f"{a.out}/overview_xz{suffix}.png", dpi=150); plt.close(fig)
     print("done", round(time.time() - t0, 1), "s")
 
 
