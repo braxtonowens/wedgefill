@@ -79,6 +79,34 @@ the top and bottom caps and leaves XY exactly as segmented.
 |---|---|
 | ![closed fit](docs/salmonella_curled_closedfit.png) | ![wedge-aware](docs/salmonella_curled.png) |
 
+## Cross-validation on real data (rotated wedge)
+
+The real hidden caps hold no data, so we test the completion where the answer is known.
+1. Hide a band of membrane that **is** visible: mask voxels whose normal lies within θ of the x- or y-axis.
+2. Complete with that band marked hidden, on top of the real beam-axis cone.
+3. Measure the distance (nm) from the held-out real membrane to the prediction.
+
+The **floor** is the same distance for the voxels the fit did see, which reflects mask thickness. Script:
+`scripts/crossval_rotated_wedge.py`; results in `docs/crossval/`.
+
+Setup: 9 objects (2 SARS-CoV-2 virions, 3 mouse vesicles, 4 Salmonella membranes), 2 axes and 2 band sizes, 36
+tests in all. Values are medians over tests (floor ≈ 2.2 nm):
+
+| Held-out band | wedgefill | convex hull | ellipsoid fit | wedgefill best vs ellipsoid / hull |
+|---|---|---|---|---|
+| θ = 35° | **2.55 nm** | 3.00 nm | 3.09 nm | 15/18, 14/18 |
+| θ = 50° | **2.70 nm** | 3.27 nm | 3.36 nm | 12/18, 12/18 |
+
+- **Closed vesicles and virions.** Predictions are within about 0.3 nm of the floor, e.g. SARS-CoV-2 1.4–2.0 nm
+  against a floor of 1.2–1.5 nm.
+- **Bias.** Median radial bias is −0.1 to −0.2 nm, so there is no systematic inflation across these gaps.
+- **Failures.** wedgefill does badly on two non-convex Salmonella objects:
+  - a curled, bean-shaped membrane;
+  - a membrane with a real XY opening, when the held-out band joins that opening.
+  Errors there are 7–22 nm and point inward.
+- **Caveat.** The held-out bands are around the equator, so this tests gap bridging by the bending prior, not the
+  polar caps specifically.
+
 ## Automatic object selection and acceptance
 
 `scripts/complete_tomogram.py --auto N` tries the N largest membrane objects that are not cut by the XY edges of the
@@ -96,8 +124,8 @@ accepted. All 5 were checked by eye and look plausible. The rejected candidates 
 
 ## Limitations
 
-- **Not validated against ground truth.** The hidden region holds little or no membrane signal, so completed caps
-  are the prior's prediction, not a measurement.
+- **Validated only indirectly.** The real hidden caps hold little or no membrane signal, so their shape is the
+  prior's prediction. The rotated-wedge cross-validation above tests gap bridging on real membranes, not the poles.
   - Report curvature, height or volume of completed regions with that caveat.
   - Planned validation: dual-axis tomograms, and phantoms with realistic tilt-series simulation.
 - **Shape bias.** The Willmore prior favours round shapes, so flattened objects may be completed too tall. A

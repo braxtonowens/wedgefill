@@ -35,7 +35,7 @@ class Completion:
 
 
 def complete_membrane(points, hidden_deg=55.0, lam=0.05, w_vis=1.0, level=4, steps=1500, off_mask=2.0,
-                      wedge_aware=True, max_points=6000, device="cpu", seed=0):
+                      wedge_aware=True, max_points=6000, device="cpu", seed=0, hidden_cones=None):
     """Fit a wedge-aware closed surface to membrane points (N, 3) and classify its faces.
 
     Parameters
@@ -47,6 +47,9 @@ def complete_membrane(points, hidden_deg=55.0, lam=0.05, w_vis=1.0, level=4, ste
     w_vis : weight of the term that pulls visible-direction surface onto the mask (0 with wedge_aware=False).
     off_mask : faces farther than this from every mask point (voxels) count as new surface.
     wedge_aware : False gives the plain closed fit (completes in every direction; for comparison only).
+    hidden_cones : optional list of (axis (3,), half-angle in degrees). Normals within a cone (either sign) are
+        treated as hidden. Default: [((1, 0, 0), hidden_deg)], the beam axis (axis 0). Extra cones are used for
+        cross-validation (hide a band that is actually visible and check the prediction).
     """
     rng = np.random.default_rng(seed)
     points = np.asarray(points, float)
@@ -58,7 +61,11 @@ def complete_membrane(points, hidden_deg=55.0, lam=0.05, w_vis=1.0, level=4, ste
     F = torch.tensor(f, device=device)
     P = torch.tensor(fit_pts, dtype=torch.float64, device=device)
     opt = torch.optim.Adam([V], lr=0.2)
-    cos_h = float(np.cos(np.deg2rad(hidden_deg)))
+    if hidden_cones is None:
+        hidden_cones = [((1.0, 0.0, 0.0), hidden_deg)]
+    axes = torch.tensor(np.array([np.asarray(a, float) / np.linalg.norm(a) for a, _ in hidden_cones]),
+                        dtype=torch.float64, device=device)                       # (C, 3)
+    cos_c = torch.tensor([np.cos(np.deg2rad(d)) for _, d in hidden_cones], dtype=torch.float64, device=device)
     e0 = None
     for step in range(steps):
         s = 8.0 * (1 - step / steps) + 1.5          # robust scale, annealed (voxels)
@@ -67,7 +74,8 @@ def complete_membrane(points, hidden_deg=55.0, lam=0.05, w_vis=1.0, level=4, ste
         loss = (d2p / (d2p + s**2)).mean() * s**2
         if wedge_aware and w_vis > 0:
             n = vertex_normals_t(V, F)
-            vis = torch.sigmoid((cos_h - n[:, 0].abs()) / 0.05)  # ~1 where the normal is in a visible direction
+            inside = torch.sigmoid(((n @ axes.T).abs() - cos_c) / 0.05)  # (V, C): ~1 inside each hidden cone
+            vis = 1 - inside.max(dim=1).values                             # ~1 where the normal is visible
             d2v = D.min(dim=0).values ** 2                         # vertex close to some mask point
             loss = loss + w_vis * (vis.detach() * d2v / (d2v + s**2)).mean() * s**2
         W, _, farea = willmore_terms(V, F)
@@ -81,7 +89,8 @@ def complete_membrane(points, hidden_deg=55.0, lam=0.05, w_vis=1.0, level=4, ste
     fn, _, cen = face_geometry(Vn, f)
     dist = cKDTree(points).query(cen)[0]
     off = dist > off_mask
-    hidden = np.abs(fn[:, 0]) > cos_h
+    ax_np, cos_np = axes.cpu().numpy(), cos_c.cpu().numpy()
+    hidden = (np.abs(fn @ ax_np.T) > cos_np).any(axis=1)
     if not wedge_aware:
         return Completion(Vn, f, off, np.zeros_like(off), dist)
     return Completion(Vn, f, off & hidden, off & ~hidden, dist)
